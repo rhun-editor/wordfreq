@@ -180,15 +180,10 @@ static void on_command(rx_ext *ext, const char *name, rx_doc doc, void *user) {
 static void on_event(rx_ext *ext, const rx_event *ev, void *user) {
     state *s = (state *)user;
     if (strcmp(ev->name, "opened") == 0 && ev->argc >= 4) {
-        /* opened DOC VERSION LANG PATH: the path is the rest of the line after three fields */
-        const char *path = ev->rest;
-        for (int k = 0; k < 3 && path; k++) {
-            path = strchr(path, ' ');
-            if (path) path++;
-        }
+        /* opened DOC VERSION LANG PATH: the path may hold spaces */
         int i = ndocs < 256 ? ndocs++ : 255;
         ids[i] = atoll(ev->argv[0]);
-        snprintf(paths[i], sizeof paths[i], "%s", path ? path : "-");
+        snprintf(paths[i], sizeof paths[i], "%s", rx_event_tail(ev, 3));
     } else if (strcmp(ev->name, "active") == 0 && ev->argc >= 1) {
         const char *path = path_of(atoll(ev->argv[0]));
         const char *slash = strrchr(path, '/'), *back = strrchr(path, '\\');
