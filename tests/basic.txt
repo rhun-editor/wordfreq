@@ -1,0 +1,12 @@
+# Run with: rhun PROJECT --headless 1000x600 --scale 1 --extensions DIR --script tests/basic.txt
+# where DIR/rhun-editor/wordfreq holds extension.ini and bin/ (tests/run.sh sets that up).
+wait 100
+open proj/sample.txt
+cmd wordfreq.chart
+wait-ext wordfreq running
+wait 500
+print-views
+move 60 150
+click 60 150
+wait 300
+print-state
