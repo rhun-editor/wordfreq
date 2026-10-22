@@ -1,15 +1,22 @@
 /* wordfreq: the open file's most frequent words as a bar chart in a tab of its own, kept current
  * as you type. Hover a bar for its count; click it to select the word's first use. Written in C
- * on rhunext.h (https://github.com/rhun-editor/extension-protocol/tree/main/c). */
+ * on rhunext.h (https://github.com/rhun-editor/extension-protocol/tree/main/c).
+ * Protocol 1.1 adds two things that follow the active file: a table of all its words in the
+ * bottom panel (a retained view, features view-tree and view-table: rhun draws, sorts and scrolls
+ * it, and a click on a row selects the word's first use), and a status bar item with its word
+ * count (status-items) that opens the chart; the manifest's item of the same name shows before
+ * the program runs. */
 #define RHUNEXT_IMPLEMENTATION
 #include "rhunext.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define TOP 15
+#define TOP 15          /* the chart's bars */
+#define ROWS 200        /* the table's rows */
 #define WORD_MAX 64
 
 typedef struct {
@@ -17,6 +24,13 @@ typedef struct {
     int count;
     int line, col;      /* its first use */
 } entry;
+
+/* the words of a text: every distinct one, most frequent first, then by first use */
+typedef struct {
+    entry *all;
+    size_t n;
+    long total;         /* words counted, repeats included */
+} tally;
 
 typedef struct {
     int64_t view;       /* 0: no chart open */
@@ -29,6 +43,9 @@ typedef struct {
     double adv, lh;     /* the normal text size */
     int hover;          /* the row under the pointer, -1 for none */
     int stale;          /* the document changed: count again before drawing */
+    rx_doc active;      /* the active document, 0 for none */
+    int64_t table;      /* the table view's instance, 0 before it opens */
+    int table_shown;    /* it is on screen */
 } state;
 
 /* the documents rhun reported, by id: their paths ("-" when untitled) */
@@ -42,12 +59,30 @@ static const char *path_of(rx_doc d) {
     return "-";
 }
 
+static void name_of(rx_doc d, char *out, size_t size) {
+    const char *path = path_of(d);
+    const char *slash = strrchr(path, '/'), *back = strrchr(path, '\\');
+    if (back && (!slash || back > slash)) slash = back;
+    snprintf(out, size, "%s", strcmp(path, "-") == 0 ? "untitled" : slash ? slash + 1 : path);
+}
+
 static int is_word_byte(unsigned char c) { return isalnum(c) || c == '_' || c >= 0x80; }
 
-/* the words of the text, three bytes or longer, the TOP most frequent */
-static void count_words(state *s, const unsigned char *text, size_t len) {
-    size_t cap = 1024, n = 0;
-    entry *all = (entry *)calloc(cap, sizeof *all);
+static int by_count(const void *a, const void *b) {
+    const entry *x = (const entry *)a, *y = (const entry *)b;
+    if (x->count != y->count) return y->count - x->count;
+    return x->line != y->line ? x->line - y->line : x->col - y->col;
+}
+
+/* the words of the text, three bytes or longer and not starting with a digit, counted through a
+ * hash table of their indexes in t->all, then sorted */
+static void count_words(tally *t, const unsigned char *text, size_t len) {
+    size_t cap = 1024, nslot = 2048;
+    int *slot = (int *)malloc(nslot * sizeof *slot);
+    memset(slot, -1, nslot * sizeof *slot);
+    t->all = (entry *)calloc(cap, sizeof *t->all);
+    t->n = 0;
+    t->total = 0;
     int line = 1, col = 1;
     size_t i = 0;
     while (i < len) {
@@ -63,45 +98,57 @@ static void count_words(state *s, const unsigned char *text, size_t len) {
         size_t wl = i - start;
         if (wl < 3 || wl >= WORD_MAX || isdigit(text[start])) continue;
         char w[WORD_MAX];
-        for (size_t k = 0; k < wl; k++) w[k] = (char)tolower(text[start + k]);
+        uint32_t h = 2166136261u;
+        for (size_t k = 0; k < wl; k++) {
+            w[k] = (char)tolower(text[start + k]);
+            h = (h ^ (unsigned char)w[k]) * 16777619u;
+        }
         w[wl] = 0;
-        size_t k;
-        for (k = 0; k < n; k++)
-            if (strcmp(all[k].word, w) == 0) break;
-        if (k < n) {
-            all[k].count++;
+        t->total++;
+        size_t s = h & (nslot - 1);
+        while (slot[s] >= 0 && strcmp(t->all[slot[s]].word, w) != 0) s = (s + 1) & (nslot - 1);
+        if (slot[s] >= 0) {
+            t->all[slot[s]].count++;
             continue;
         }
-        if (n == cap) {
+        if (t->n == cap) {
             cap *= 2;
-            all = (entry *)realloc(all, cap * sizeof *all);
+            t->all = (entry *)realloc(t->all, cap * sizeof *t->all);
         }
-        memcpy(all[n].word, w, wl + 1);
-        all[n].count = 1;
-        all[n].line = line;
-        all[n].col = wcol;
-        n++;
+        memcpy(t->all[t->n].word, w, wl + 1);
+        t->all[t->n].count = 1;
+        t->all[t->n].line = line;
+        t->all[t->n].col = wcol;
+        slot[s] = (int)t->n++;
+        if (t->n * 2 > nslot) {     /* half full: twice the slots, every word placed again */
+            nslot *= 2;
+            slot = (int *)realloc(slot, nslot * sizeof *slot);
+            memset(slot, -1, nslot * sizeof *slot);
+            for (size_t k = 0; k < t->n; k++) {
+                uint32_t hk = 2166136261u;
+                for (const char *c = t->all[k].word; *c; c++) hk = (hk ^ (unsigned char)*c) * 16777619u;
+                size_t sk = hk & (nslot - 1);
+                while (slot[sk] >= 0) sk = (sk + 1) & (nslot - 1);
+                slot[sk] = (int)k;
+            }
+        }
     }
-    /* the top ones, most frequent first, then by first use */
-    s->ntop = 0;
-    for (int t = 0; t < TOP; t++) {
-        int best = -1;
-        for (size_t k = 0; k < n; k++)
-            if (all[k].count > 0 && (best < 0 || all[k].count > all[best].count)) best = (int)k;
-        if (best < 0) break;
-        s->top[s->ntop++] = all[best];
-        all[best].count = 0;
-    }
-    free(all);
+    free(slot);
+    qsort(t->all, t->n, sizeof *t->all, by_count);
 }
 
+/* the chart's document counted again: its TOP words */
 static void refresh(rx_ext *ext, state *s) {
     size_t len;
     int64_t version;
     unsigned char *text = rx_text(ext, s->doc, &len, &version);
     if (!text) return;
-    count_words(s, text, len);
+    tally t;
+    count_words(&t, text, len);
     free(text);
+    s->ntop = t.n < TOP ? (int)t.n : TOP;
+    memcpy(s->top, t.all, (size_t)s->ntop * sizeof *s->top);
+    free(t.all);
     s->stale = 0;
 }
 
@@ -152,6 +199,88 @@ static int row_at(state *s, double y) {
     return i < s->ntop ? i : -1;
 }
 
+/* Protocol 1.1: the active document's words, in the table (when it is on screen) and as the
+ * status item's count; neither shows without an active document. */
+static void follow(rx_ext *ext, state *s) {
+    int items = rx_has(ext, "status-items"), table = s->table && s->table_shown;
+    if (!items && !table) return;
+    tally t = {NULL, 0, 0};
+    unsigned char *text = NULL;
+    size_t len = 0;
+    if (s->active) text = rx_text(ext, s->active, &len, NULL);
+    if (text) {
+        count_words(&t, text, len);
+        free(text);
+    }
+    char name[256];
+    name_of(s->active, name, sizeof name);
+    if (items && !text) {
+        rx_remove_status_item(ext, "count");
+    } else if (items) {
+        /* "$(list) 12 words", the most frequent in the tooltip; a click opens the chart */
+        char label[64], tip[500];
+        snprintf(label, sizeof label, "$(list) %ld %s", t.total, t.total == 1 ? "word" : "words");
+        int at = snprintf(tip, sizeof tip, "%s: %zu distinct. Most frequent:", name, t.n);
+        for (size_t i = 0; i < t.n && i < 5 && at < (int)sizeof tip - 80; i++)
+            at += snprintf(tip + at, sizeof tip - at, "%s %s %d", i ? "," : "", t.all[i].word, t.all[i].count);
+        snprintf(tip + at, sizeof tip - at, "\nClick for the chart.");
+        rx_status_item it = {0};
+        it.name = "count";
+        it.align = "right";
+        it.priority = 10;
+        it.text = label;
+        it.tooltip = tip;
+        it.command = "chart";
+        it.when = "activeTab == doc";
+        if (rx_set_status_item(ext, &it) < 0) fprintf(stderr, "wordfreq: status item: %s\n", rx_error(ext));
+    }
+    if (table) {
+        rx_patch p;
+        memset(&p, 0, sizeof p);
+        if (!text) {
+            rx_patch_title(&p, "");
+            rx_patch_badge(&p, 0);
+            rx_patch_kids(&p, "", 0, NULL, 0, 0);
+            rx_patch_state(&p, "empty", "Open a file to see its words.", "");
+        } else {
+            char title[300], msg[200], doc[32], cell[32];
+            /* a title is at most 80 bytes: cut a long name at a character's start */
+            size_t cut = snprintf(title, sizeof title, "Words: %s", name);
+            if (cut > 80) {
+                cut = 80;
+                while (cut > 0 && ((unsigned char)title[cut] & 0xc0) == 0x80) cut--;
+                title[cut] = 0;
+            }
+            rx_patch_title(&p, title);
+            rx_patch_badge(&p, (int)t.n);
+            snprintf(msg, sizeof msg, "%ld words, %zu distinct%s", t.total, t.n, t.n > ROWS ? ": the 200 most frequent" : "");
+            rx_patch_message(&p, msg);
+            rx_column cols[3] = {{"Word", 0, 0, 1}, {"Uses", 1, 6, 1}, {"First line", 1, 10, 1}};
+            rx_patch_columns(&p, 3, cols);
+            /* a row per word, its id the word; a click opens the document at its first use */
+            rx_buf recs = {NULL, 0, 0}, x = {NULL, 0, 0};
+            int n = t.n < ROWS ? (int)t.n : ROWS;
+            snprintf(doc, sizeof doc, "#%lld", (long long)s->active);
+            for (int i = 0; i < n; i++) {
+                x.len = 0;
+                snprintf(cell, sizeof cell, "%d", t.all[i].count);
+                rx_x_cell(&x, cell);
+                snprintf(cell, sizeof cell, "%d", t.all[i].line);
+                rx_x_cell(&x, cell);
+                rx_x_open(&x, doc, t.all[i].line, t.all[i].col);
+                rx_node_rec(&recs, t.all[i].word, strlen(t.all[i].word), t.all[i].word, "leaf", &x);
+            }
+            rx_patch_kids(&p, "", 0, &recs, n, 0);
+            if (n == 0) rx_patch_state(&p, "empty", "No words of three letters or more.", "");
+            rx_buf_free(&recs);
+            rx_buf_free(&x);
+        }
+        if (rx_view_patch(ext, s->table, &p) < 0) fprintf(stderr, "wordfreq: table: %s\n", rx_error(ext));
+        rx_patch_free(&p);
+    }
+    free(t.all);
+}
+
 static void on_command(rx_ext *ext, const char *name, rx_doc doc, void *user) {
     state *s = (state *)user;
     if (strcmp(name, "chart") != 0) return;
@@ -166,10 +295,11 @@ static void on_command(rx_ext *ext, const char *name, rx_doc doc, void *user) {
     if (s->view) rx_unview(ext, s->view);
     s->doc = doc;
     snprintf(s->path, sizeof s->path, "%s", path_of(doc));
+    name_of(doc, s->name, sizeof s->name);
     s->hover = -1;
     s->stale = 1;
     char title[300];
-    snprintf(title, sizeof title, "Words: %s", s->name[0] ? s->name : "untitled");
+    snprintf(title, sizeof title, "Words: %s", s->name);
     s->view = rx_view(ext, title);
     if (s->view < 0) {
         s->view = 0;
@@ -185,13 +315,15 @@ static void on_event(rx_ext *ext, const rx_event *ev, void *user) {
         ids[i] = atoll(ev->argv[0]);
         snprintf(paths[i], sizeof paths[i], "%s", rx_event_tail(ev, 3));
     } else if (strcmp(ev->name, "active") == 0 && ev->argc >= 1) {
-        const char *path = path_of(atoll(ev->argv[0]));
-        const char *slash = strrchr(path, '/'), *back = strrchr(path, '\\');
-        if (back && (!slash || back > slash)) slash = back;
-        snprintf(s->name, sizeof s->name, "%s", strcmp(path, "-") == 0 ? "untitled" : slash ? slash + 1 : path);
-    } else if (strcmp(ev->name, "edits") == 0 && ev->argc >= 1 && atoll(ev->argv[0]) == s->doc && s->view) {
-        s->stale = 1;
-        draw(ext, s);
+        s->active = atoll(ev->argv[0]);
+        follow(ext, s);
+    } else if (strcmp(ev->name, "edits") == 0 && ev->argc >= 1) {
+        rx_doc d = atoll(ev->argv[0]);
+        if (d == s->doc && s->view) {
+            s->stale = 1;
+            draw(ext, s);
+        }
+        if (d == s->active) follow(ext, s);
     }
 }
 
@@ -224,6 +356,20 @@ static void on_view(rx_ext *ext, int64_t view, const rx_view_event *ev, void *us
     }
 }
 
+/* the table's instance (the manifest's [views] words), and when it comes on screen */
+static void on_view_open(rx_ext *ext, const rx_view_open *open, void *user) {
+    state *s = (state *)user;
+    (void)ext;
+    if (strcmp(open->name, "words") == 0) s->table = open->view;
+}
+
+static void on_view_event(rx_ext *ext, int64_t view, const rx_retained_event *ev, void *user) {
+    state *s = (state *)user;
+    if (view != s->table || strcmp(ev->kind, "visible") != 0) return;
+    s->table_shown = ev->on;
+    if (ev->on) follow(ext, s);
+}
+
 int main(void) {
     static state s;
     s.adv = 7, s.lh = 18, s.hover = -1;
@@ -231,5 +377,7 @@ int main(void) {
     h.command = on_command;
     h.event = on_event;
     h.view = on_view;
-    return rx_run("views", &h, &s);
+    h.view_open = on_view_open;
+    h.view_event = on_view_event;
+    return rx_run("views view-tree view-table status-items", &h, &s);
 }

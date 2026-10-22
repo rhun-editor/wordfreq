@@ -1,3 +1,4 @@
 ext=wordfreq state=running
-view=1 title=Words: sample.txt shapes=11 size=1000x498 at=0,76
+view=2 title=Words: sample.txt shapes=11 size=1000x498 at=0,76
+view=1 kind=table place=panel name=words rev=0 state=none busy=0 title=Word Frequency badge=0 visible=0 nodes=0
 tabs=2 active=sample.txt line=1 col=6 sel=5 dirty=0 lang=none focus=0 theme=rhun-dark

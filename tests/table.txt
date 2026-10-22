@@ -1,0 +1,35 @@
+# Run with: rhun PROJECT --headless 1000x600 --scale 1 --extensions DIR --script tests/table.txt
+# (tests/run.sh sets it up). Protocol 1.1: the manifest's status item shows before the program
+# runs; showing the table starts it, the table and the item follow the active file and its edits,
+# and Enter on a row selects the word's first use.
+wait 100
+open proj/sample.txt
+wait 300
+print-status
+print-extensions
+view-show words
+wait-ext wordfreq running
+wait 300
+wait 300
+print-status
+print-view words
+key Escape
+key ctrl+End
+type cherry cherry cherry
+wait 300
+wait 300
+print-view words
+print-status
+open proj/other.txt
+wait 300
+wait 300
+print-view words
+open proj/sample.txt
+wait 300
+wait 300
+view-focus words
+key End
+key Return
+wait 300
+wait 300
+print-state

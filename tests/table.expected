@@ -1,0 +1,21 @@
+side=right prio=10 owner=rhun-editor/wordfreq item=count text=$(list) Words tooltip=Chart the most frequent words of this file command=chart shown=1 at=916,577,66,20
+rhun-editor/wordfreq state=idle pid=0 cmds=wordfreq.chart confined=0
+ext=wordfreq state=running
+side=right prio=10 owner=rhun-editor/wordfreq item=count text=$(list) 6 words tooltip=sample.txt: 3 distinct. Most frequent: apple 3, banana 2, cherry 1\nClick for the chart. command=chart shown=1 at=904,577,78,20
+at=0,396 size=1000x178 scroll=0 rowh=28
+columns=Word:left:0:sort:4:832|Uses:right:6:sort:836:58|First line:right:10:sort:894:94 sorted=0
+row 0 y=396 d=0 leaf id=apple label=apple cells=3|1
+row 1 y=424 d=0 leaf id=banana label=banana cells=2|1
+row 2 y=452 d=0 leaf id=cherry label=cherry cells=1|2
+at=0,396 size=1000x178 scroll=0 rowh=28
+columns=Word:left:0:sort:4:832|Uses:right:6:sort:836:58|First line:right:10:sort:894:94 sorted=0
+row 0 y=396 d=0 leaf id=cherry label=cherry cells=4|2
+row 1 y=424 d=0 leaf id=apple label=apple cells=3|1
+row 2 y=452 d=0 leaf id=banana label=banana cells=2|1
+side=right prio=10 owner=rhun-editor/wordfreq item=count text=$(list) 9 words tooltip=sample.txt: 3 distinct. Most frequent: cherry 4, apple 3, banana 2\nClick for the chart. command=chart shown=1 at=904,577,78,20
+at=0,396 size=1000x178 scroll=0 rowh=28
+columns=Word:left:0:sort:4:832|Uses:right:6:sort:836:58|First line:right:10:sort:894:94 sorted=0
+row 0 y=396 d=0 leaf id=one label=one cells=1|1
+row 1 y=424 d=0 leaf id=two label=two cells=1|1
+row 2 y=452 d=0 leaf id=three label=three cells=1|1
+tabs=2 active=sample.txt line=1 col=7 sel=0 dirty=1 lang=none focus=0 theme=rhun-dark
